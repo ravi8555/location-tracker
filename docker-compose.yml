@@ -1,0 +1,103 @@
+services:
+  # PostgreSQL for OIDC Auth Server
+  postgres-oidc:
+    image: postgres:17
+    container_name: postgres_oidc
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+      POSTGRES_DB: oidc_auth
+    volumes:
+      - pgdata_oidc:/var/lib/postgresql/data
+      - ./init-scripts/oidc-init.sql:/docker-entrypoint-initdb.d/01-oidc-init.sql
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d oidc_auth"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c effective_cache_size=768MB
+      -c maintenance_work_mem=64MB
+
+  # PostgreSQL for Location Tracker
+  postgres-tracker:
+    image: postgres:17
+    container_name: postgres_tracker
+    restart: unless-stopped
+    ports:
+      - "5433:5432"  # Different port to avoid conflict
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+      POSTGRES_DB: location_tracker
+    volumes:
+      - pgdata_tracker:/var/lib/postgresql/data
+      - ./init-scripts/tracker-init.sql:/docker-entrypoint-initdb.d/01-tracker-init.sql
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d location_tracker"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: >
+      postgres
+      -c shared_buffers=512MB
+      -c effective_cache_size=1536MB
+      -c maintenance_work_mem=128MB
+      -c max_connections=200
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka_tracker
+    restart: unless-stopped
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: 'broker,controller'
+      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@localhost:9093'
+      KAFKA_LISTENERS: 'PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093'
+      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://localhost:9092'
+      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+    
+
+  # Optional: PGAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    restart: unless-stopped
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - app-network
+    depends_on:
+      - postgres-oidc
+      - postgres-tracker
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  pgdata_oidc:
+  pgdata_tracker:
+  pgadmin_data:
