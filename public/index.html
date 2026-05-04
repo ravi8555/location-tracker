@@ -551,280 +551,336 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <script>
-        const AUTH_SERVER = 'http://localhost:8000';
-        const TRACKER_SERVER = 'http://localhost:8001';
-        
-        let token = null;
-        let socket = null;
-        let map = null;
-        let myMarker = null;
-        let userMarkers = new Map();
-        let locationInterval = null;
-        let currentUser = null;
-        
-        // Check if we have a token in URL (from OAuth redirect)
-        const urlParams = new URLSearchParams(window.location.search);
-        const code = urlParams.get('code');
-        
-        if (code) {
-            // Exchange code for token
-            exchangeCodeForToken(code);
-        } else {
-            // Check if we have a stored token
-            token = localStorage.getItem('access_token');
-            if (token) {
-                initApp();
+        const AUTH_SERVER = 'https://oidc-auth-module.vercel.app';
+            const TRACKER_SERVER = 'http://localhost:8001';
+
+            let token = null;
+            let socket = null;
+            let map = null;
+            let myMarker = null;
+            let userMarkers = new Map();
+            let locationInterval = null;
+            let currentUser = null;
+
+            // Check if we have a token in URL (from OAuth redirect)
+            const urlParams = new URLSearchParams(window.location.search);
+            const code = urlParams.get('code');
+
+            if (code) {
+                // Exchange code for token
+                exchangeCodeForToken(code);
             } else {
-                redirectToAuth();
+                initApp().catch(() => redirectToAuth());
             }
-        }
-        
-        async function exchangeCodeForToken(code) {
-    try {
-        const response = await fetch(`${AUTH_SERVER}/o/token`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                grant_type: 'authorization_code',
-                shortCode: code,  // Make sure this matches your backend (shortCode)
-                client_id: 'test_client_123',
-                client_secret: 'test_secret_456',
-                redirect_uri: window.location.origin
-            })
-        });
-        
-        const data = await response.json();
-        console.log('Token response:', data); // Debug log
-        
-        // Note: Your backend returns 'accessTtoken' (typo)
-        if (data.accessTtoken) {
-            token = data.accessTtoken;
-            localStorage.setItem('access_token', token);
-            localStorage.setItem('refresh_token', data.refreshToken);
-            window.history.replaceState({}, document.title, window.location.pathname);
-            initApp();
-        } else {
-            console.error('No token in response:', data);
-            redirectToAuth();
-        }
-    } catch (error) {
-        console.error('Token exchange failed:', error);
-        redirectToAuth();
-    }
+            async function generatePKCE() {
+  const array = new Uint8Array(32);
+  crypto.getRandomValues(array);
+
+  const code_verifier = btoa(String.fromCharCode(...array))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+
+  const encoder = new TextEncoder();
+  const data = encoder.encode(code_verifier);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+
+  const code_challenge = btoa(String.fromCharCode(...new Uint8Array(digest)))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+
+  return { code_verifier, code_challenge };
 }
-        
-function redirectToAuth() {
-            const redirectUri = encodeURIComponent(window.location.origin);
-            window.location.href = `${AUTH_SERVER}/o/authenticate?client_id=test_client_123&redirect_uri=${redirectUri}&response_type=code`;
-        }
-        
-        async function initApp() {
-            try {
-                // Decode token to get user info
-                const payload = JSON.parse(atob(token.split('.')[1]));
-                currentUser = {
-                    userId: payload.sub,
-                    email: payload.email,
-                    name: payload.name || payload.given_name || payload.email
-                };
-                
-                document.getElementById('userInfo').innerHTML = `
-                    <strong>${currentUser.name}</strong><br>
-                    <small>${currentUser.email}</small>
-                    <button class="logout-btn" onclick="logout()">Logout</button>
-                `;
-                
-                updateStatus('Connected - Sharing location');
-                
-                // Initialize map
-                map = L.map('map').setView([51.505, -0.09], 13);
-                L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                    maxZoom: 19,
-                    attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-                }).addTo(map);
-                
-                // Connect to socket server
-                connectSocket();
-                
-                // Start location tracking
-                startLocationTracking();
-                
-            } catch (error) {
-                console.error('Failed to init app:', error);
-                redirectToAuth();
-            }
-        }
-        
-        function connectSocket() {
-            socket = io(TRACKER_SERVER, {
-                auth: { token: token },
-                transports: ['websocket', 'polling']
-            });
-            
-            socket.on('connect', () => {
-                console.log('Connected to tracker server');
-                updateStatus('Connected - Sharing location');
-            });
-            
-            socket.on('disconnect', () => {
-                console.log('Disconnected from tracker server');
-                updateStatus('Disconnected - Attempting to reconnect...');
-            });
-            
-            socket.on('server:location:update', (data) => {
-                console.log('Location update received:', data);
-                updateUserMarker(data);
-            });
-            
-            socket.on('server:user:connected', (user) => {
-                console.log('User connected:', user);
-                addUserToList(user);
-            });
-            
-            socket.on('server:user:disconnected', (user) => {
-                console.log('User disconnected:', user);
-                removeUserMarker(user.userId);
-                removeUserFromList(user.userId);
-            });
-            
-            socket.on('server:users:list', (users) => {
-                console.log('Initial users list:', users);
-                users.forEach(user => {
-                    if (user.userId !== currentUser.userId) {
-                        addUserToList(user);
-                    }
+
+
+async function redirectToAuth() {
+  const { code_verifier, code_challenge } = await generatePKCE();
+
+  // store verifier
+  localStorage.setItem("pkce_verifier", code_verifier);
+
+  const redirectUri = encodeURIComponent(window.location.origin);
+
+  window.location.href =
+    `${AUTH_SERVER}/o/authenticate` +
+    `?client_id=b0c741de0fb45c9560305c1331b7f36b` +
+    `&redirect_uri=${redirectUri}` +
+    `&response_type=code` +
+    `&code_challenge=${code_challenge}` +
+    `&code_challenge_method=S256`;
+}
+           async function exchangeCodeForToken(code) {
+  try {
+    const code_verifier = localStorage.getItem("pkce_verifier");
+    if (!code_verifier) {
+  return redirectToAuth(); // safety fallback
+}
+
+    const response = await fetch(`${AUTH_SERVER}/o/token`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      credentials: "include", // ✅ critical
+      body: JSON.stringify({
+        grant_type: "authorization_code",
+        code: code,
+        client_id: "b0c741de0fb45c9560305c1331b7f36b",
+        redirect_uri: window.location.origin,
+        code_verifier: code_verifier
+      }),
+    });
+
+    if (!response.ok) {
+      console.error("Token exchange failed");
+      return redirectToAuth();
+    }
+
+    // clean URL
+    window.history.replaceState({}, document.title, window.location.pathname);
+
+    // cleanup PKCE
+    localStorage.removeItem("pkce_verifier");
+
+    // start app
+    initApp();
+
+  } catch (error) {
+    console.error("Token exchange failed:", error);
+    redirectToAuth();
+  }
+}
+ async function initApp() {
+  try {
+    const res = await fetch(`${AUTH_SERVER}/o/userinfo`, {
+      credentials: "include"
+    });
+
+    if (res.status === 401) {
+      await refreshToken();   // 🔄 try refresh
+      return initApp();       // retry
+    }
+
+    // const user = await res.json();
+
+    const user = await res.json();
+
+currentUser = {
+  userId: user.sub,
+  email: user.email,
+  name: user.name || user.given_name
+};
+
+    document.getElementById('userInfo').innerHTML = `
+      <strong>${currentUser.name}</strong><br>
+      <small>${currentUser.email}</small>
+      <button class="logout-btn" onclick="logout()">Logout</button>
+    `;
+
+    updateStatus('Connected - Sharing location');
+
+    // Initialize map
+    map = L.map('map').setView([51.505, -0.09], 13);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+
+    connectSocket();
+    startLocationTracking();
+
+  } catch (error) {
+    console.error('Failed to init app:', error);
+    redirectToAuth();
+  }
+}
+           
+
+function connectSocket() {
+                socket = io(TRACKER_SERVER, {
+                    // auth: { token: token },
+                    // transports: ['websocket', 'polling']
+                    withCredentials: true
                 });
-            });
-        }
 
-        function updateUserMarker(data) {
-    const { userId, name, email, latitude, longitude } = data;
-    
-    if (userId === currentUser.userId) return;
-    
-    let marker = userMarkers.get(userId);
-    const displayName = name || email || userId;
-    
-    if (!marker) {
-        marker = L.marker([latitude, longitude])
-            .addTo(map)
-            .bindPopup(displayName);
-        userMarkers.set(userId, marker);
-    } else {
-        marker.setLatLng([latitude, longitude]);
-        marker.getPopup().setContent(displayName);
-    }
-}
-        
-        // function updateUserMarker(data) {
-        //     const { userId, name, latitude, longitude } = data;
-            
-        //     if (userId === currentUser.userId) return;
-            
-        //     let marker = userMarkers.get(userId);
-            
-        //     if (!marker) {
-        //         marker = L.marker([latitude, longitude])
-        //             .addTo(map)
-        //             .bindPopup(name || userId);
-        //         userMarkers.set(userId, marker);
-        //     } else {
-        //         marker.setLatLng([latitude, longitude]);
-        //     }
-        // }
-        
-        function removeUserMarker(userId) {
-            const marker = userMarkers.get(userId);
-            if (marker) {
-                map.removeLayer(marker);
-                userMarkers.delete(userId);
-            }
-        }
-        
-        function addUserToList(user) {
-            const usersList = document.getElementById('usersList');
-            let li = document.getElementById(`user-${user.userId}`);
-            if (!li) {
-                li = document.createElement('li');
-                li.id = `user-${user.userId}`;
-                li.textContent = user.name || user.email;
-                usersList.appendChild(li);
-            }
-        }
-        
-        function removeUserFromList(userId) {
-            const li = document.getElementById(`user-${userId}`);
-            if (li) li.remove();
-        }
-        
-        function updateStatus(message) {
-            const statusDiv = document.getElementById('status');
-            statusDiv.textContent = message;
-        }
-        
-        async function startLocationTracking() {
-            if (!navigator.geolocation) {
-                alert('Geolocation is not supported by your browser');
-                return;
-            }
-            
-            await sendLocation();
-            locationInterval = setInterval(sendLocation, 10000);
-        }
-        
-        async function sendLocation() {
-    try {
-        const position = await new Promise((resolve, reject) => {
-            navigator.geolocation.getCurrentPosition(resolve, reject, {
-                enableHighAccuracy: true,
-                timeout: 10000,
-                maximumAge: 5000
-            });
-        });
-        
-        const { latitude, longitude } = position.coords;
-        
-        // Update my marker on map
-        if (!myMarker) {
-            myMarker = L.marker([latitude, longitude])
-                .addTo(map)
-                .bindPopup(`You are here<br>${currentUser.name || currentUser.email}`)
-                .openPopup();
-            map.setView([latitude, longitude], 15);
-        } else {
-            myMarker.setLatLng([latitude, longitude]);
-        }
-        
-        // Send to server via socket with user info
-        if (socket && socket.connected) {
-            socket.emit('client:location:update', { 
-                latitude, 
-                longitude,
-                email: currentUser.email,
-                name: currentUser.name
-            });
-            updateStatus(`Location sent - ${new Date().toLocaleTimeString()}`);
-        }
-        
-    } catch (error) {
-        console.error('Error getting location:', error);
-        updateStatus(`Location error: ${error.message}`);
-    }
-}
-function logout() {
-    console.log("LOg00000000ut");
-    
-    if (locationInterval) clearInterval(locationInterval);
-    if (socket) socket.disconnect();
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
-    
-    // Redirect to auth server's logout or login page
-     window.location.href = 'http://localhost:8000/authenticate.html';
-    // Instead of redirecting to local file, use the OIDC endpoint
-    // window.location.href = `${AUTH_SERVER}/o/authenticate?client_id=test_client_123&redirect_uri=${encodeURIComponent(window.location.origin)}&response_type=code`;
+                socket.on('connect', () => {
+                    console.log('Connected to tracker server');
+                    updateStatus('Connected - Sharing location');
+                });
 
+                socket.on('disconnect', () => {
+                    console.log('Disconnected from tracker server');
+                    updateStatus('Disconnected - Attempting to reconnect...');
+                });
+
+                socket.on('server:location:update', (data) => {
+                    console.log('Location update received:', data);
+                    updateUserMarker(data);
+                });
+
+                socket.on('server:user:connected', (user) => {
+                    console.log('User connected:', user);
+                    addUserToList(user);
+                });
+
+                socket.on('server:user:disconnected', (user) => {
+                    console.log('User disconnected:', user);
+                    removeUserMarker(user.userId);
+                    removeUserFromList(user.userId);
+                });
+
+                socket.on('server:users:list', (users) => {
+                    console.log('Initial users list:', users);
+                    users.forEach(user => {
+                        if (user.userId !== currentUser.userId) {
+                            addUserToList(user);
+                        }
+                    });
+                });
+            }
+
+            function updateUserMarker(data) {
+                const { userId, name, email, latitude, longitude } = data;
+
+                if (userId === currentUser.userId) return;
+
+                let marker = userMarkers.get(userId);
+                const displayName = name || email || userId;
+
+                if (!marker) {
+                    marker = L.marker([latitude, longitude])
+                        .addTo(map)
+                        .bindPopup(displayName);
+                    userMarkers.set(userId, marker);
+                } else {
+                    marker.setLatLng([latitude, longitude]);
+                    marker.getPopup().setContent(displayName);
+                }
+            }
+
+            // function updateUserMarker(data) {
+            //     const { userId, name, latitude, longitude } = data;
+
+            //     if (userId === currentUser.userId) return;
+
+            //     let marker = userMarkers.get(userId);
+
+            //     if (!marker) {
+            //         marker = L.marker([latitude, longitude])
+            //             .addTo(map)
+            //             .bindPopup(name || userId);
+            //         userMarkers.set(userId, marker);
+            //     } else {
+            //         marker.setLatLng([latitude, longitude]);
+            //     }
+            // }
+
+            function removeUserMarker(userId) {
+                const marker = userMarkers.get(userId);
+                if (marker) {
+                    map.removeLayer(marker);
+                    userMarkers.delete(userId);
+                }
+            }
+
+            function addUserToList(user) {
+                const usersList = document.getElementById('usersList');
+                let li = document.getElementById(`user-${user.userId}`);
+                if (!li) {
+                    li = document.createElement('li');
+                    li.id = `user-${user.userId}`;
+                    li.textContent = user.name || user.email;
+                    usersList.appendChild(li);
+                }
+            }
+
+            function removeUserFromList(userId) {
+                const li = document.getElementById(`user-${userId}`);
+                if (li) li.remove();
+            }
+
+            function updateStatus(message) {
+                const statusDiv = document.getElementById('status');
+                statusDiv.textContent = message;
+            }
+
+            async function startLocationTracking() {
+                if (!navigator.geolocation) {
+                    alert('Geolocation is not supported by your browser');
+                    return;
+                }
+
+                await sendLocation();
+                locationInterval = setInterval(sendLocation, 10000);
+            }
+
+            async function sendLocation() {
+                try {
+                    const position = await new Promise((resolve, reject) => {
+                        navigator.geolocation.getCurrentPosition(resolve, reject, {
+                            enableHighAccuracy: true,
+                            timeout: 10000,
+                            maximumAge: 5000
+                        });
+                    });
+
+                    const { latitude, longitude } = position.coords;
+
+                    // Update my marker on map
+                    if (!myMarker) {
+                        myMarker = L.marker([latitude, longitude])
+                            .addTo(map)
+                            .bindPopup(`You are here<br>${currentUser.name || currentUser.email}`)
+                            .openPopup();
+                        map.setView([latitude, longitude], 15);
+                    } else {
+                        myMarker.setLatLng([latitude, longitude]);
+                    }
+
+                    // Send to server via socket with user info
+                    if (socket && socket.connected) {
+                        socket.emit('client:location:update', {
+                            latitude,
+                            longitude,
+                            email: currentUser.email,
+                            name: currentUser.name
+                        });
+                        updateStatus(`Location sent - ${new Date().toLocaleTimeString()}`);
+                    }
+
+                } catch (error) {
+                    console.error('Error getting location:', error);
+                    updateStatus(`Location error: ${error.message}`);
+                }
+            }
+
+   async function refreshToken() {
+  const res = await fetch(`${AUTH_SERVER}/o/token/refresh`, {
+    method: "POST",
+    credentials: "include"
+  });
+
+  if (!res.ok) {
+    throw new Error("Refresh failed");
+  }
 }
-    </script>
+            async function logout() {
+  try {
+    await fetch(`${AUTH_SERVER}/o/logout`, {
+      method: "POST",
+      credentials: "include"
+    });
+
+    localStorage.removeItem("pkce_verifier");
+
+    window.location.reload();
+
+  } catch (err) {
+    console.error("Logout failed", err);
+  }
+}
+
+           </script>
 </body>
 </html>
