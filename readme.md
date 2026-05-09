@@ -95,7 +95,7 @@ Create a `.env` file:
 PORT=8001
 
 # OIDC
-AUTH_SERVER=https://oidc-auth-module.vercel.app
+AUTH_SERVER=https://auth.portfoliohub.in
 
 # Kafka
 KAFKA_BROKERS=localhost:9092
